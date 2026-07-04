@@ -134,7 +134,7 @@ function checkHtbSolves() {
 
   const lastDate = props.getProperty(PROP_KEYS.LAST_DATE);
   const seenKeys = new Set(JSON.parse(props.getProperty(PROP_KEYS.SEEN_KEYS) || "[]"));
-  const latestDate = activityDate_(latestActivity_(activities));
+  const latestDate = activityDate_(latestActivity_(activities)) || new Date().toISOString();
 
   if (!lastDate && !CONFIG.BACKFILL_ON_FIRST_RUN) {
     props.setProperty(PROP_KEYS.LAST_DATE, latestDate);
@@ -145,7 +145,8 @@ function checkHtbSolves() {
 
   const newSolves = activities.filter((activity) => {
     const key = activityKey_(activity);
-    const isNewer = !lastDate || new Date(activityDate_(activity)) > new Date(lastDate);
+    const date = activityDate_(activity);
+    const isNewer = !lastDate || !date || new Date(date) > new Date(lastDate);
     return isNewer && isSolveActivity_(activity) && !seenKeys.has(key);
   }).reverse();
 
@@ -176,7 +177,7 @@ function importLatestHtbActivity() {
 
   const seenKeys = new Set(JSON.parse(props.getProperty(PROP_KEYS.SEEN_KEYS) || "[]"));
   seenKeys.add(activityKey_(latestSolve));
-  props.setProperty(PROP_KEYS.LAST_DATE, activityDate_(latestSolve));
+  props.setProperty(PROP_KEYS.LAST_DATE, activityDate_(latestSolve) || new Date().toISOString());
   props.setProperty(PROP_KEYS.SEEN_KEYS, JSON.stringify(Array.from(seenKeys).slice(-500)));
   updateStatusSheet_(`Imported latest activity: ${activityName_(latestSolve)}`);
 
@@ -241,7 +242,7 @@ function fetchHtbActivities_(token) {
 function appendSolves_(activities) {
   const sheet = ensureSolvesSheet_();
   const rows = activities.map((activity) => [
-    localDate_(activityDate_(activity)),
+    localDate_(displayDate_(activity)),
     activityType_(activity),
     activitySolveType_(activity),
     activityName_(activity),
@@ -319,19 +320,96 @@ function localDate_(isoDate) {
   return Utilities.formatDate(new Date(isoDate), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
 }
 
+function displayDate_(activity) {
+  return activityDate_(activity) || new Date().toISOString();
+}
+
 function activityDate_(activity) {
-  return (
+  const direct =
     activity.date ||
     activity.created_at ||
     activity.createdAt ||
+    activity.created ||
+    activity.updated_at ||
+    activity.updatedAt ||
+    activity.submitted_at ||
+    activity.submittedAt ||
+    activity.solved_at ||
+    activity.solvedAt ||
     activity.completed_at ||
     activity.completedAt ||
     activity.owned_at ||
     activity.ownedAt ||
     activity.timestamp ||
     activity.time ||
-    ""
-  );
+    "";
+
+  return normalizeDateValue_(direct) || findDateCandidate_(activity, 0) || "";
+}
+
+function normalizeDateValue_(value) {
+  if (value === null || value === undefined || value === "") return "";
+
+  if (typeof value === "number") {
+    const millis = value > 1000000000000 ? value : value * 1000;
+    const date = new Date(millis);
+    return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+  }
+
+  if (Object.prototype.toString.call(value) === "[object Date]") {
+    return Number.isNaN(value.getTime()) ? "" : value.toISOString();
+  }
+
+  if (typeof value !== "string") return "";
+
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  const relative = relativeDate_(trimmed);
+  if (relative) return relative;
+
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+}
+
+function relativeDate_(value) {
+  const text = value.toLowerCase();
+  if (text === "now" || text.includes("just now")) return new Date().toISOString();
+
+  const match = text.match(/(\d+)\s*(second|minute|hour|day|week|month|year)s?\s*ago/);
+  if (!match) return "";
+
+  const amount = Number(match[1]);
+  const unit = match[2];
+  const millisByUnit = {
+    second: 1000,
+    minute: 60 * 1000,
+    hour: 60 * 60 * 1000,
+    day: 24 * 60 * 60 * 1000,
+    week: 7 * 24 * 60 * 60 * 1000,
+    month: 30 * 24 * 60 * 60 * 1000,
+    year: 365 * 24 * 60 * 60 * 1000,
+  };
+
+  return new Date(Date.now() - amount * millisByUnit[unit]).toISOString();
+}
+
+function findDateCandidate_(value, depth) {
+  if (!value || depth > 4 || typeof value !== "object") return "";
+
+  const priority = Object.keys(value).filter((key) => /date|time|created|updated|owned|completed|submitted|solved|timestamp/i.test(key));
+  const rest = Object.keys(value).filter((key) => !priority.includes(key));
+
+  for (const key of priority.concat(rest)) {
+    const child = value[key];
+    const normalized = normalizeDateValue_(child);
+    if (normalized) return normalized;
+
+    const nested = findDateCandidate_(child, depth + 1);
+    if (nested) return nested;
+  }
+
+  return "";
 }
 
 function latestActivity_(activities) {
