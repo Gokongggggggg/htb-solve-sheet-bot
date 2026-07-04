@@ -20,6 +20,7 @@ function onOpen() {
     .addItem("Set HTB token", "setHtbToken")
     .addItem("Test HTB token", "testHtbToken")
     .addItem("Baseline current solves", "baselineCurrentHtbSolves")
+    .addItem("Import latest activity", "importLatestHtbActivity")
     .addItem("Install 10-min detector", "installHtbDetector")
     .addItem("Run check now", "checkHtbSolves")
     .addItem("Reset detector state", "resetHtbDetectorState")
@@ -124,8 +125,7 @@ function checkHtbSolves() {
   const newSolves = activities.filter((activity) => {
     const key = activityKey_(activity);
     const isNewer = !lastDate || new Date(activityDate_(activity)) > new Date(lastDate);
-    const isSolveType = ["machine", "challenge", "fortress", "endgame"].includes(activityType_(activity));
-    return isNewer && isSolveType && !seenKeys.has(key);
+    return isNewer && isSolveActivity_(activity) && !seenKeys.has(key);
   });
 
   if (newSolves.length) {
@@ -136,6 +136,29 @@ function checkHtbSolves() {
   newSolves.forEach((activity) => seenKeys.add(activityKey_(activity)));
   props.setProperty(PROP_KEYS.LAST_DATE, latestDate);
   props.setProperty(PROP_KEYS.SEEN_KEYS, JSON.stringify(Array.from(seenKeys).slice(-500)));
+}
+
+function importLatestHtbActivity() {
+  const props = PropertiesService.getScriptProperties();
+  const token = getToken_();
+  const activities = fetchHtbActivities_(token);
+  if (!activities.length) {
+    SpreadsheetApp.getUi().alert("No HTB activity returned.");
+    return;
+  }
+
+  activities.sort((a, b) => new Date(activityDate_(a)) - new Date(activityDate_(b)));
+  const latestSolve = activities.slice().reverse().find(isSolveActivity_) || activities[activities.length - 1];
+
+  appendSolves_([latestSolve]);
+  if (CONFIG.WRITE_DAILY_STANDUP) appendDailyStandup_([latestSolve]);
+
+  const seenKeys = new Set(JSON.parse(props.getProperty(PROP_KEYS.SEEN_KEYS) || "[]"));
+  seenKeys.add(activityKey_(latestSolve));
+  props.setProperty(PROP_KEYS.LAST_DATE, activityDate_(latestSolve));
+  props.setProperty(PROP_KEYS.SEEN_KEYS, JSON.stringify(Array.from(seenKeys).slice(-500)));
+
+  SpreadsheetApp.getUi().alert(`Imported latest HTB activity: ${latestSolve.name || latestSolve.object_type || "unknown"}`);
 }
 
 function getToken_() {
@@ -272,7 +295,38 @@ function activityDate_(activity) {
 }
 
 function activityType_(activity) {
-  return String(activity.object_type || activity.objectType || activity.object || activity.kind || "").toLowerCase();
+  const explicitType = String(activity.object_type || activity.objectType || activity.object || activity.kind || "").toLowerCase();
+  if (explicitType) return explicitType;
+
+  const text = [
+    activity.type,
+    activity.activity_type,
+    activity.activityType,
+    activity.flag_title,
+    activity.object_name,
+    activity.objectName,
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  if (activity.challenge_category || activity.challenge_category_id || text.includes("challenge")) return "challenge";
+  if (activity.machine_avatar || activity.machine_id || activity.machine_name || text.includes("machine")) return "machine";
+  if (text.includes("fortress")) return "fortress";
+  if (text.includes("endgame")) return "endgame";
+  return "";
+}
+
+function isSolveActivity_(activity) {
+  const type = activityType_(activity);
+  if (["machine", "challenge", "fortress", "endgame"].includes(type)) return true;
+
+  const text = [
+    activity.type,
+    activity.activity_type,
+    activity.activityType,
+    activity.flag_title,
+    activity.name,
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  return ["own", "owned", "root", "user", "blood", "solve", "completed"].some((word) => text.includes(word));
 }
 
 function activityKey_(activity) {
