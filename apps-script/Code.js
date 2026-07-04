@@ -95,10 +95,10 @@ function baselineCurrentHtbSolves() {
     return;
   }
 
-  activities.sort((a, b) => new Date(activityDate_(a)) - new Date(activityDate_(b)));
+  const latestActivity = latestActivity_(activities);
   const props = PropertiesService.getScriptProperties();
-  props.setProperty(PROP_KEYS.LAST_DATE, activityDate_(activities[activities.length - 1]));
-  props.setProperty(PROP_KEYS.SEEN_KEYS, JSON.stringify(activities.map(activityKey_).slice(-500)));
+  props.setProperty(PROP_KEYS.LAST_DATE, activityDate_(latestActivity));
+  props.setProperty(PROP_KEYS.SEEN_KEYS, JSON.stringify(activities.map(activityKey_).slice(0, 500)));
 
   SpreadsheetApp.getUi().alert("Baseline saved. Future runs will only append newer solves.");
 }
@@ -110,15 +110,13 @@ function checkHtbSolves() {
   const activities = fetchHtbActivities_(token);
   if (!activities.length) return;
 
-  activities.sort((a, b) => new Date(activityDate_(a)) - new Date(activityDate_(b)));
-
   const lastDate = props.getProperty(PROP_KEYS.LAST_DATE);
   const seenKeys = new Set(JSON.parse(props.getProperty(PROP_KEYS.SEEN_KEYS) || "[]"));
-  const latestDate = activityDate_(activities[activities.length - 1]);
+  const latestDate = activityDate_(latestActivity_(activities));
 
   if (!lastDate && !CONFIG.BACKFILL_ON_FIRST_RUN) {
     props.setProperty(PROP_KEYS.LAST_DATE, latestDate);
-    props.setProperty(PROP_KEYS.SEEN_KEYS, JSON.stringify(activities.map(activityKey_)));
+    props.setProperty(PROP_KEYS.SEEN_KEYS, JSON.stringify(activities.map(activityKey_).slice(0, 500)));
     return;
   }
 
@@ -126,7 +124,7 @@ function checkHtbSolves() {
     const key = activityKey_(activity);
     const isNewer = !lastDate || new Date(activityDate_(activity)) > new Date(lastDate);
     return isNewer && isSolveActivity_(activity) && !seenKeys.has(key);
-  });
+  }).reverse();
 
   if (newSolves.length) {
     appendSolves_(newSolves);
@@ -147,8 +145,7 @@ function importLatestHtbActivity() {
     return;
   }
 
-  activities.sort((a, b) => new Date(activityDate_(a)) - new Date(activityDate_(b)));
-  const latestSolve = activities.slice().reverse().find(isSolveActivity_) || activities[activities.length - 1];
+  const latestSolve = activities.find(isSolveActivity_) || latestActivity_(activities);
 
   appendSolves_([latestSolve]);
   if (CONFIG.WRITE_DAILY_STANDUP) appendDailyStandup_([latestSolve]);
@@ -292,6 +289,10 @@ function activityDate_(activity) {
     activity.time ||
     ""
   );
+}
+
+function latestActivity_(activities) {
+  return activities.find((activity) => activityDate_(activity)) || activities[0];
 }
 
 function activityType_(activity) {
