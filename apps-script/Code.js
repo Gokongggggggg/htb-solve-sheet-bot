@@ -94,9 +94,9 @@ function baselineCurrentHtbSolves() {
     return;
   }
 
-  activities.sort((a, b) => new Date(a.date) - new Date(b.date));
+  activities.sort((a, b) => new Date(activityDate_(a)) - new Date(activityDate_(b)));
   const props = PropertiesService.getScriptProperties();
-  props.setProperty(PROP_KEYS.LAST_DATE, activities[activities.length - 1].date);
+  props.setProperty(PROP_KEYS.LAST_DATE, activityDate_(activities[activities.length - 1]));
   props.setProperty(PROP_KEYS.SEEN_KEYS, JSON.stringify(activities.map(activityKey_).slice(-500)));
 
   SpreadsheetApp.getUi().alert("Baseline saved. Future runs will only append newer solves.");
@@ -109,11 +109,11 @@ function checkHtbSolves() {
   const activities = fetchHtbActivities_(token);
   if (!activities.length) return;
 
-  activities.sort((a, b) => new Date(a.date) - new Date(b.date));
+  activities.sort((a, b) => new Date(activityDate_(a)) - new Date(activityDate_(b)));
 
   const lastDate = props.getProperty(PROP_KEYS.LAST_DATE);
   const seenKeys = new Set(JSON.parse(props.getProperty(PROP_KEYS.SEEN_KEYS) || "[]"));
-  const latestDate = activities[activities.length - 1].date;
+  const latestDate = activityDate_(activities[activities.length - 1]);
 
   if (!lastDate && !CONFIG.BACKFILL_ON_FIRST_RUN) {
     props.setProperty(PROP_KEYS.LAST_DATE, latestDate);
@@ -123,8 +123,8 @@ function checkHtbSolves() {
 
   const newSolves = activities.filter((activity) => {
     const key = activityKey_(activity);
-    const isNewer = !lastDate || new Date(activity.date) > new Date(lastDate);
-    const isSolveType = ["machine", "challenge", "fortress", "endgame"].includes(activity.object_type);
+    const isNewer = !lastDate || new Date(activityDate_(activity)) > new Date(lastDate);
+    const isSolveType = ["machine", "challenge", "fortress", "endgame"].includes(activityType_(activity));
     return isNewer && isSolveType && !seenKeys.has(key);
   });
 
@@ -145,33 +145,60 @@ function getToken_() {
 }
 
 function fetchHtbActivities_(token) {
-  const url = `https://www.hackthebox.com/api/v4/user/profile/activity/${CONFIG.HTB_USER_ID}`;
-  const response = UrlFetchApp.fetch(url, {
-    method: "get",
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${token}`,
-      "User-Agent": "HTB-Solve-Detector/0.1",
-    },
-    muteHttpExceptions: true,
-  });
+  const urls = [
+    `https://labs.hackthebox.com/api/v5/user/profile/activity/${CONFIG.HTB_USER_ID}`,
+    `https://labs.hackthebox.com/api/v4/user/profile/activity/${CONFIG.HTB_USER_ID}`,
+    `https://www.hackthebox.com/api/v4/user/profile/activity/${CONFIG.HTB_USER_ID}`,
+    `https://app.hackthebox.com/api/v4/user/profile/activity/${CONFIG.HTB_USER_ID}`,
+  ];
+  const errors = [];
+  let data = null;
 
-  const status = response.getResponseCode();
-  const text = response.getContentText();
-  if (status < 200 || status >= 300) {
-    throw new Error(`HTB API returned ${status}: ${text.slice(0, 300)}`);
+  for (const url of urls) {
+    const response = UrlFetchApp.fetch(url, {
+      method: "get",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+        "X-Requested-With": "XMLHttpRequest",
+        "User-Agent": "Mozilla/5.0",
+      },
+      muteHttpExceptions: true,
+    });
+
+    const status = response.getResponseCode();
+    const text = response.getContentText();
+    if (status >= 200 && status < 300) {
+      try {
+        data = JSON.parse(text);
+        break;
+      } catch (error) {
+        errors.push(`${url} => ${status}: non-JSON response (${text.slice(0, 80)})`);
+        continue;
+      }
+    }
+
+    errors.push(`${url} => ${status}: ${text.slice(0, 120)}`);
   }
 
-  const data = JSON.parse(text);
-  return (((data || {}).profile || {}).activity || []);
+  if (!data) {
+    throw new Error(`HTB API failed. Tried: ${errors.join(" | ")}`);
+  }
+
+  return (
+    ((data || {}).profile || {}).activity ||
+    ((data || {}).info || {}).activity ||
+    (Array.isArray((data || {}).data) ? data.data : []) ||
+    []
+  );
 }
 
 function appendSolves_(activities) {
   const sheet = ensureSolvesSheet_();
   const rows = activities.map((activity) => [
-    activity.date || "",
-    localDate_(activity.date),
-    activity.object_type || "",
+    activityDate_(activity),
+    localDate_(activityDate_(activity)),
+    activityType_(activity),
     activity.type || activity.flag_title || "own",
     activity.name || "",
     activity.challenge_category || "",
@@ -229,10 +256,29 @@ function localDate_(isoDate) {
   return Utilities.formatDate(new Date(isoDate), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
 }
 
+function activityDate_(activity) {
+  return (
+    activity.date ||
+    activity.created_at ||
+    activity.createdAt ||
+    activity.completed_at ||
+    activity.completedAt ||
+    activity.owned_at ||
+    activity.ownedAt ||
+    activity.timestamp ||
+    activity.time ||
+    ""
+  );
+}
+
+function activityType_(activity) {
+  return String(activity.object_type || activity.objectType || activity.object || activity.kind || "").toLowerCase();
+}
+
 function activityKey_(activity) {
   return [
-    activity.date || "",
-    activity.object_type || "",
+    activityDate_(activity),
+    activityType_(activity),
     activity.type || "",
     activity.name || "",
     activity.flag_title || "",
